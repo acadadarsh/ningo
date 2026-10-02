@@ -6,49 +6,75 @@ import (
 	"sync"
 )
 
+type Client struct {
+	conn *websocket.Conn
+	send chan string
+	role string
+}
+
+func (c *Client) WriteLoop(ctx context.Context) {
+
+	for {
+		select {
+		case queuedImage := <-c.send:
+			err := c.conn.Write(
+				ctx, 
+				websocket.MessageText,
+				[]byte(queuedImage),
+			)
+			if err != nil {
+				return
+			}
+
+		case <-ctx.Done():
+			return
+
+		}
+	}
+}
+
 type Hub struct {
 	mu      sync.Mutex
-	clients map[*websocket.Conn]struct{}
+	clients map[*Client]struct{}
 }
 
 func NewHub() *Hub {
 	return &Hub{
-		clients: make(map[*websocket.Conn]struct{}),
+		clients: make(map[*Client]struct{}),
 	}
 }
 
-func (h *Hub) Add(conn *websocket.Conn) {
+func (h *Hub) Add(client *Client) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	h.clients[conn] = struct{}{}
+	h.clients[client] = struct{}{}
 }
 
-func (h *Hub) Remove(conn *websocket.Conn) {
+func (h *Hub) Remove(client *Client) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	delete(h.clients, conn)
-} 
+	delete(h.clients, client)
+}
 
-func (h *Hub) Broadcast(ctx context.Context, imageBase64 string){
+func (h *Hub) Broadcast(ctx context.Context, imageBase64 string) {
 	h.mu.Lock()
-	clients:=make([]*websocket.Conn,0,len(h.clients))
+	clients := make([]*Client, 0, len(h.clients))
 
-	for conn:= range h.clients{
-		clients=append(clients, conn)
+	for client := range h.clients {
+		clients = append(clients, client)
 	}
 	h.mu.Unlock()
 
-	for _,conn:=range clients{
-		err:=conn.Write(
-			ctx,
-			websocket.MessageText,
-			[]byte(imageBase64),
-		)
-		if err!=nil{
-			h.Remove(conn)
+	for _, client := range clients {
+
+		if client.role != "extension" {
+			continue
+		}
+		select {
+		case client.send <- imageBase64:
+		case <-ctx.Done():
+			return
 		}
 	}
-
 }
-
